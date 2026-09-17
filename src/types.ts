@@ -6,6 +6,10 @@ export interface Meta {
   months: Partial<Record<MetricKey, string>>
   breaks: Partial<Record<MetricKey, number[]>>
   counts?: Partial<Record<MetricKey, number>>
+  /** 'zillow' = Zillow's payment series; 'computed' = estimated from ZHVI */
+  mc_method?: 'zillow' | 'computed' | null
+  /** 30-yr rate (percent) used when mc_method is 'computed' */
+  mc_rate?: number | null
 }
 
 /** Feature properties baked into the pmtiles layer (kept short for tile size). */

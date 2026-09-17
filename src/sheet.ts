@@ -61,8 +61,12 @@ export class Sheet {
       </div>`)
     }
 
+    const mcNote =
+      meta?.mc_method === 'computed'
+        ? `est. 20% down, 30-yr @ ${meta.mc_rate?.toFixed(2) ?? '—'}% + tax & ins.`
+        : '20% down, from Zillow’s payment series'
     row('hv', p.hv, p.hv_yoy)
-    row('mc', p.mc, p.mc_yoy, '20% down, from Zillow’s payment series')
+    row('mc', p.mc, p.mc_yoy, mcNote)
     row('rn', p.rn, p.rn_yoy)
 
     const month = meta?.months[activeMetric]

@@ -81,6 +81,14 @@ METRIC_SOURCES: dict[str, dict] = {
 ZCTA_URL = "https://www2.census.gov/geo/tiger/GENZ2020/shp/cb_2020_us_zcta520_500k.zip"
 GEONAMES_URL = "https://download.geonames.org/export/zip/US.zip"
 
+# Fallback for the monthly-cost metric when Zillow's payment series is not
+# available at ZIP level: compute it from ZHVI. Mortgage rate comes from
+# Freddie Mac PMMS (free, keyless), else DEFAULT_RATE_PCT.
+PMMS_URL = "https://www.freddiemac.com/pmms/docs/PMMS_history.csv"
+DEFAULT_RATE_PCT = 6.35
+PROPERTY_TAX_RATE = 0.011  # /yr of home value, national approximation
+INSURANCE_RATE = 0.0035  # /yr of home value, national approximation
+
 OUT_DIR = Path(__file__).resolve().parent.parent / "out"
 N_CLASSES = 6  # 6-step ramps in the app → 5 interior quantile breaks
 
@@ -240,6 +248,37 @@ def fetch_geonames() -> pd.DataFrame:
         return pd.DataFrame(columns=["zip", "city", "st"])
 
 
+def current_mortgage_rate() -> tuple[float, str]:
+    """Latest 30-year fixed rate (percent) from Freddie Mac PMMS, with fallback."""
+    try:
+        r = http_get(PMMS_URL, tries=2, timeout=60)
+        rows = [ln for ln in r.text.splitlines() if ln.strip()]
+        header = [h.strip().lower() for h in rows[0].split(",")]
+        col = next((i for i, h in enumerate(header) if "30" in h), 1)
+        for ln in reversed(rows[1:]):
+            parts = ln.split(",")
+            if len(parts) > col:
+                try:
+                    rate = float(parts[col].strip().strip('"'))
+                    if 1.0 < rate < 20.0:
+                        return rate, "pmms"
+                except ValueError:
+                    continue
+        raise RuntimeError("no parsable rate rows")
+    except Exception as e:  # noqa: BLE001
+        print(f"[rate] PMMS unavailable ({e}); using default {DEFAULT_RATE_PCT}%")
+        return DEFAULT_RATE_PCT, "default"
+
+
+def computed_monthly_cost(hv: pd.Series, rate_pct: float) -> pd.Series:
+    """Est. all-in monthly cost: 30-yr P&I on 80% LTV + est. tax + insurance."""
+    r = rate_pct / 100.0 / 12.0
+    loan = 0.8 * hv
+    pi = loan * (r / (1.0 - (1.0 + r) ** -360))
+    extras = hv * (PROPERTY_TAX_RATE + INSURANCE_RATE) / 12.0
+    return (pi + extras).round(0)
+
+
 def nice_round(v: float) -> float:
     if v <= 0 or not np.isfinite(v):
         return float(round(v)) if np.isfinite(v) else 0.0
@@ -270,6 +309,20 @@ def main() -> int:
     for f in frames:
         merged = f if merged is None else merged.merge(f, on="zip", how="outer")
     assert merged is not None
+
+    # Zillow's Total Monthly Payment series is not published at ZIP level;
+    # when it's absent, estimate monthly cost from ZHVI (labeled as an
+    # estimate in the app via mc_method/mc_rate in meta.json).
+    mc_method = "zillow" if "mc" in months else None
+    mc_rate: float | None = None
+    if "mc" not in months and "hv" in months:
+        rate, src = current_mortgage_rate()
+        merged["mc"] = computed_monthly_cost(merged["hv"], rate)
+        merged.loc[merged["hv"].isna(), "mc"] = np.nan
+        months["mc"] = months["hv"]
+        mc_method, mc_rate = "computed", rate
+        print(f"[mc] computed from ZHVI at {rate}% 30-yr ({src}), "
+              f"tax {PROPERTY_TAX_RATE:.1%}/yr + ins {INSURANCE_RATE:.2%}/yr")
 
     gdf = fetch_zcta()
     names = fetch_geonames()
@@ -338,6 +391,8 @@ def main() -> int:
         "months": months,
         "breaks": breaks,
         "counts": counts,
+        "mc_method": mc_method,
+        "mc_rate": mc_rate,
     }
     (OUT_DIR / "meta.json").write_text(json.dumps(meta, indent=1))
     print(f"[out] {out_path} ({out_path.stat().st_size / 1e6:.1f} MB)")
