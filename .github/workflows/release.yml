@@ -1,0 +1,43 @@
+name: release
+
+# Cut a release from the Actions tab: creates tag v<version> on the chosen
+# ref and starts the android build for it. (Pushing a tag by hand triggers
+# android.yml directly — this workflow is just a convenient button, and the
+# path used by automation since tag pushes may be restricted for bots.)
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semver to release, without the v (e.g. 1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version
+        run: |
+          [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::version must be plain semver like 1.2.3"; exit 1; }
+
+      - name: Create and push tag
+        run: |
+          set -euo pipefail
+          TAG="v${{ inputs.version }}"
+          git config user.name "costlab-release-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "costLAB $TAG"
+          git push origin "refs/tags/$TAG"
+
+      - name: Start android build on the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run android.yml --ref "v${{ inputs.version }}"
