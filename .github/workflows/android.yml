@@ -1,0 +1,195 @@
+name: android
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+  schedule:
+    # Weekly: keeps the signing-key cache warm (7-day idle TTL) and re-creates
+    # + re-exports it if it was ever evicted. Once KEYSTORE_B64 etc. are set as
+    # repo secrets this becomes a no-op safety net.
+    - cron: '17 8 * * 1'
+
+permissions:
+  contents: write
+
+jobs:
+  # Ensures a signing key exists in a DEFAULT-BRANCH-scoped cache. Actions
+  # caches are ref-scoped: only caches created on main are readable from tag
+  # runs, so the key must never be created by a tag build. This job runs on
+  # main (schedule + workflow_dispatch). On first run it generates the key and
+  # uploads it encrypted to the owner's RSA public key so it can be archived
+  # and promoted to repo secrets (the permanent home).
+  keystore:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+    steps:
+      - uses: actions/checkout@v4
+        # needed for keys/export_public.pem
+
+      - name: Restore signing-key cache
+        id: restore
+        if: env.KEYSTORE_B64 == ''
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/keys
+          key: costlab-release-keystore-v1
+
+      - name: Generate signing key (first run only)
+        id: gen
+        if: env.KEYSTORE_B64 == '' && steps.restore.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/keys
+          PASS=$(openssl rand -hex 24)
+          keytool -genkeypair -v -keystore ~/keys/release.keystore \
+            -alias costlab -keyalg RSA -keysize 4096 -validity 10000 \
+            -storepass "$PASS" -keypass "$PASS" \
+            -dname "CN=costLAB Release, O=mattlabs"
+          printf '%s' "$PASS" > ~/keys/storepass.txt
+          printf '%s' "$PASS" > ~/keys/keypass.txt
+          printf 'costlab' > ~/keys/alias.txt
+
+      # The keystore must never appear in logs, git, or plaintext artifacts.
+      - name: Export signing key (encrypted to owner key)
+        if: steps.gen.outcome == 'success'
+        run: |
+          set -euo pipefail
+          cd ~/keys
+          tar czf ks.tgz release.keystore storepass.txt keypass.txt alias.txt
+          openssl rand -hex 32 > aes.hex
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -pass file:aes.hex -in ks.tgz -out ks.tgz.enc
+          openssl pkeyutl -encrypt -pubin -inkey "$GITHUB_WORKSPACE/keys/export_public.pem" \
+            -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 \
+            -in aes.hex -out aes.hex.enc
+          rm -f aes.hex ks.tgz
+          mkdir -p /tmp/ksexport
+          cp ks.tgz.enc aes.hex.enc /tmp/ksexport/
+
+      - name: Upload encrypted key export
+        if: steps.gen.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: keystore-export-encrypted
+          path: /tmp/ksexport/
+          retention-days: 3
+
+      - name: Save signing-key cache (main-scoped)
+        if: steps.gen.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/keys
+          key: costlab-release-keystore-v1
+
+  build:
+    needs: [keystore]
+    if: ${{ !cancelled() && github.event_name != 'schedule' && (needs.keystore.result == 'success' || needs.keystore.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+      KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASS: ${{ secrets.KEY_PASS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Sync Capacitor project
+        run: npx cap sync android
+
+      # Signing key resolution: repo secrets → main-scoped cache → FAIL.
+      # A release build must never mint a new key: that would silently change
+      # the signature and break in-app updates for every installed device.
+      - name: Restore signing key from cache
+        if: env.KEYSTORE_B64 == ''
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/keys
+          key: costlab-release-keystore-v1
+
+      - name: Materialize signing key
+        run: |
+          set -euo pipefail
+          mkdir -p ~/keys
+          if [ -n "${KEYSTORE_B64:-}" ]; then
+            echo "signing with keystore from repo secrets"
+            echo "$KEYSTORE_B64" | base64 -d > ~/keys/release.keystore
+            printf '%s' "$KEYSTORE_PASS" > ~/keys/storepass.txt
+            printf '%s' "${KEY_PASS:-$KEYSTORE_PASS}" > ~/keys/keypass.txt
+            printf '%s' "${KEY_ALIAS:-costlab}" > ~/keys/alias.txt
+          elif [ -f ~/keys/release.keystore ]; then
+            echo "signing with keystore from actions cache"
+          else
+            echo "::error::No signing key available. Run the android workflow once via workflow_dispatch on main (creates + caches + exports the key), or set the KEYSTORE_B64/KEYSTORE_PASS/KEY_ALIAS/KEY_PASS secrets. Refusing to mint a new key in a release build."
+            exit 1
+          fi
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "name=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=0.0.0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build signed release APK
+        env:
+          VERSION_NAME: ${{ steps.ver.outputs.name }}
+          VERSION_CODE: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          export RELEASE_KEYSTORE="$HOME/keys/release.keystore"
+          export RELEASE_STORE_PASS="$(cat ~/keys/storepass.txt)"
+          export RELEASE_KEY_PASS="$(cat ~/keys/keypass.txt)"
+          export RELEASE_KEY_ALIAS="$(cat ~/keys/alias.txt)"
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Collect + verify APK
+        run: |
+          set -euo pipefail
+          cp android/app/build/outputs/apk/release/app-release.apk costlab.apk
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          "$BT/apksigner" verify --print-certs costlab.apk | head -4
+          ls -la costlab.apk
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: costLAB ${{ github.ref_name }}
+          files: costlab.apk
+          body: |
+            **Install on Android:** download `costlab.apk` below, open it, and allow
+            installs from your browser if prompted (one-time).
+
+            Stable download link:
+            `https://github.com/${{ github.repository }}/releases/latest/download/costlab.apk`
+
+            App content (map, data, UI) updates automatically from GitHub Pages —
+            a new APK is only needed when the native shell changes.
+
+      - name: Upload APK artifact (non-tag builds)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: costlab-apk
+          path: costlab.apk
+          retention-days: 14

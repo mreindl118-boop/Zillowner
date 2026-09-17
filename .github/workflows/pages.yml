@@ -1,0 +1,61 @@
+name: pages
+
+on:
+  push:
+    branches: [main]
+  # Redeploy automatically whenever the data pipeline lands fresh data
+  workflow_run:
+    workflows: [data]
+    types: [completed]
+  workflow_dispatch: {}
+
+# Deploys by force-pushing the built site to the gh-pages branch. Creating a
+# gh-pages branch auto-enables Pages with a branch source, which — unlike
+# actions/configure-pages `enablement` — needs no admin-scoped token.
+permissions:
+  contents: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Attach latest data (pmtiles + meta)
+        run: |
+          mkdir -p dist/data
+          if git fetch --depth 1 origin data; then
+            git archive FETCH_HEAD | tar -x -C dist/data
+            echo "attached data:" && ls -la dist/data
+          else
+            echo "no data branch yet — deploying app without data"
+          fi
+
+      - name: Publish to gh-pages branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          touch dist/.nojekyll
+          cd dist
+          git init -q -b gh-pages
+          git config user.name "costlab-pages-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "pages deploy ${GITHUB_SHA::7} (run ${GITHUB_RUN_NUMBER})"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages

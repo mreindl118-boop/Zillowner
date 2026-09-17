@@ -1,0 +1,87 @@
+name: data
+
+on:
+  schedule:
+    # ~6th of each month, after Zillow publishes the prior month
+    - cron: '23 9 6 * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: data
+  cancel-in-progress: false
+
+jobs:
+  build-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+
+      - name: Install pipeline dependencies
+        run: pip install -r pipeline/requirements.txt
+
+      - name: Cache tippecanoe
+        id: tcache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/tippecanoe-bin
+          key: tippecanoe-v1-${{ runner.os }}
+
+      - name: Build tippecanoe from source
+        if: steps.tcache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q build-essential libsqlite3-dev zlib1g-dev
+          git clone --depth 1 https://github.com/felt/tippecanoe.git /tmp/tippecanoe
+          make -C /tmp/tippecanoe -j"$(nproc)"
+          mkdir -p ~/.local/tippecanoe-bin
+          cp /tmp/tippecanoe/tippecanoe /tmp/tippecanoe/tile-join ~/.local/tippecanoe-bin/
+
+      - name: Add tippecanoe to PATH
+        run: echo "$HOME/.local/tippecanoe-bin" >> "$GITHUB_PATH"
+
+      - name: Build dataset (Zillow + Census + GeoNames)
+        run: python pipeline/build_data.py
+
+      - name: Build PMTiles
+        run: |
+          tippecanoe -o out/costlab.pmtiles \
+            -l zips -n "costLAB zips" \
+            -Z3 -z10 -P \
+            --coalesce-densest-as-needed \
+            --extend-zooms-if-still-dropping \
+            --detect-shared-borders \
+            --force \
+            out/zips.geojsonl
+          ls -la out/
+
+      - name: Enforce size budget (< 90 MB)
+        run: |
+          size=$(stat -c%s out/costlab.pmtiles)
+          echo "costlab.pmtiles: $((size / 1024 / 1024)) MB"
+          if [ "$size" -ge $((90 * 1024 * 1024)) ]; then
+            echo "::error::pmtiles over the 90MB budget — needs harsher simplification"
+            exit 1
+          fi
+
+      - name: Publish to the data branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd out
+          rm -f zips.geojsonl _zcta.zip
+          git init -q -b data
+          git config user.name "costlab-data-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add costlab.pmtiles meta.json
+          git commit -qm "data refresh $(date -u +%Y-%m-%d) (run ${GITHUB_RUN_NUMBER})"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" data

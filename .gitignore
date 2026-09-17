@@ -1,0 +1,23 @@
+node_modules/
+dist/
+out/
+*.log
+.DS_Store
+
+# Android build outputs (the android/ project itself IS committed)
+android/.gradle/
+android/build/
+android/app/build/
+android/app/release/
+android/local.properties
+android/.idea/
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/capacitor.plugins.json
+
+# never commit keys
+*.keystore
+*.jks
+*.p12
+!keys/export_public.pem
+keys/export_private.pem
