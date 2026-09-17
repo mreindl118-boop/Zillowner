@@ -29,13 +29,21 @@ jobs:
             echo "::error::version must be plain semver like 1.2.3"; exit 1; }
 
       - name: Create and push tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           TAG="v${{ inputs.version }}"
+          # a re-cut tag must not keep a stale (draft or assetless) release around
+          for id in $(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=50" \
+              --jq ".[] | select(.tag_name == \"$TAG\") | .id"); do
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/$id"
+            echo "deleted existing release $id for $TAG"
+          done
           git config user.name "costlab-release-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "costLAB $TAG"
-          git push origin "refs/tags/$TAG"
+          git tag -fa "$TAG" -m "costLAB $TAG"
+          git push --force origin "refs/tags/$TAG"
 
       - name: Start android build on the tag
         env:
