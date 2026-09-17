@@ -54,8 +54,10 @@ jobs:
           printf 'costlab' > ~/keys/alias.txt
 
       # The keystore must never appear in logs, git, or plaintext artifacts.
+      # Runs on every dispatch (not just first generation) so the owner can
+      # always re-produce the encrypted export while the key lives in cache.
       - name: Export signing key (encrypted to owner key)
-        if: steps.gen.outcome == 'success'
+        if: env.KEYSTORE_B64 == ''
         run: |
           set -euo pipefail
           cd ~/keys
@@ -70,7 +72,7 @@ jobs:
           cp ks.tgz.enc aes.hex.enc /tmp/ksexport/
 
       - name: Upload encrypted key export
-        if: steps.gen.outcome == 'success'
+        if: env.KEYSTORE_B64 == ''
         uses: actions/upload-artifact@v4
         with:
           name: keystore-export-encrypted
