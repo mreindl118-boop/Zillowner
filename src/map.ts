@@ -1,7 +1,7 @@
-import { Map as MapLibreMap, addProtocol, type MapMouseEvent } from 'maplibre-gl'
+import { Map as MapLibreMap, addProtocol, setWorkerUrl, type MapMouseEvent } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { Protocol } from 'pmtiles'
-import { DATA_PMTILES, US_CENTER, US_ZOOM } from './config'
+import { BASE, DATA_PMTILES, US_CENTER, US_ZOOM } from './config'
 import { METRICS } from './metrics'
 import type { Meta, MetricKey, ZipProps } from './types'
 
@@ -25,6 +25,10 @@ export interface CostMap {
 }
 
 export function createMap(container: HTMLElement, meta: Meta | null, initialMetric: MetricKey): CostMap {
+  // MapLibre v6 resolves its worker module relative to the bundle URL,
+  // which breaks once bundled — point it at the copy shipped by the build.
+  setWorkerUrl(`${BASE}maplibre-gl-worker.mjs`)
+
   const protocol = new Protocol()
   addProtocol('pmtiles', protocol.tile)
 
@@ -98,6 +102,8 @@ export function createMap(container: HTMLElement, meta: Meta | null, initialMetr
       ],
     },
   })
+
+  map.on('error', (e) => console.error('costLAB map error:', e.error?.message ?? e))
 
   let clickCb: ((props: ZipProps, lngLat: { lng: number; lat: number }) => void) | null = null
   let bgCb: (() => void) | null = null
