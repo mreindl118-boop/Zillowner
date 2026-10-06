@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d366b" />
+    <meta name="description" content="How much does it cost to live here? Typical home values, monthly costs and rents, on a map." />
+    <title>costLAB</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="icons/icon-192.png" />
+    <script type="module" crossorigin src="/Zillowner/assets/index-VoeLhUE6.js"></script>
+    <link rel="stylesheet" crossorigin href="/Zillowner/assets/index-CQoJxsTb.css">
+  </head>
+  <body>
+    <div id="map" aria-label="Cost of living map"></div>
+
+    <div id="topbar">
+      <div id="metric-switch" role="tablist" aria-label="Metric">
+        <button role="tab" data-metric="hv" aria-selected="true">Home value</button>
+        <button role="tab" data-metric="mc" aria-selected="false">Monthly cost</button>
+        <button role="tab" data-metric="rn" aria-selected="false">Rent</button>
+      </div>
+    </div>
+
+    <div id="update-banner" hidden>
+      <span id="update-text">Update available</span>
+      <button id="update-install">Install</button>
+      <button id="update-later" aria-label="Dismiss">Later</button>
+    </div>
+
+    <div id="legend" aria-hidden="false">
+      <div id="legend-title">Typical home value</div>
+      <div id="legend-ramp"></div>
+      <div id="legend-labels"><span id="legend-min"></span><span id="legend-max"></span></div>
+    </div>
+
+    <button id="locate" aria-label="Go to my location" title="Go to my location">◎</button>
+
+    <div id="toast" hidden></div>
+
+    <div id="sheet" hidden>
+      <div id="sheet-grabber"></div>
+      <button id="sheet-close" aria-label="Close">×</button>
+      <div id="sheet-body"></div>
+      <div id="sheet-footer">Housing data © Zillow Research · Map data © OpenStreetMap</div>
+    </div>
+
+  </body>
+</html>
